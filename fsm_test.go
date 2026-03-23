@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	fsm "github.com/screechingbagel/nxs-go-fsm"
+	fsm "github.com/nixys/nxs-go-fsm"
 )
 
 func TestReadmeExample(t *testing.T) {
