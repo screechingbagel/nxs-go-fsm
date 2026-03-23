@@ -132,9 +132,6 @@ func (fsm *FSM) read(dst []byte) (int, error) {
 					fsm.deferredBuf.Reset()
 
 					fsm.src0 += len(ns.Switch.Trigger)
-					if err != nil {
-						return 0, err
-					}
 
 					fsm.dst.Write(d)
 				}
@@ -151,7 +148,7 @@ func (fsm *FSM) read(dst []byte) (int, error) {
 				// source buffer (EOF), we not to get new data. So we may
 				// skip rest of data in source buffer
 				skip := len(fsm.src[fsm.src0:fsm.src1])
-				if ml := state.skipMaxLen(); fsm.isEOF == false && ml > 0 {
+				if ml := state.skipMaxLen(); !fsm.isEOF && ml > 0 {
 					skip = skip - ml + 1
 				}
 

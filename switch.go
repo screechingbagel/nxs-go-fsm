@@ -1,6 +1,9 @@
 package fsm
 
-import "bytes"
+import (
+	"bytes"
+	"slices"
+)
 
 type Switch struct {
 	Trigger    []byte
@@ -46,14 +49,8 @@ func (s Switch) index(buf, prevSrc []byte, prevEscs int, isEOF bool) int {
 					c = buf[i-1]
 				}
 
-				for _, d := range s.Delimiters.L {
-					if c == d {
-						return true
-					}
-				}
-
-				return false
-			}(); b == false {
+				return slices.Contains(s.Delimiters.L, c)
+			}(); !b {
 				continue
 			}
 		}
@@ -63,7 +60,7 @@ func (s Switch) index(buf, prevSrc []byte, prevEscs int, isEOF bool) int {
 			if b := func() bool {
 
 				if i+len(s.Trigger) == len(buf) {
-					if isEOF == true {
+					if isEOF {
 						return true
 					} else {
 						return false
@@ -71,18 +68,13 @@ func (s Switch) index(buf, prevSrc []byte, prevEscs int, isEOF bool) int {
 				}
 
 				c := buf[i+len(s.Trigger)]
-				for _, d := range s.Delimiters.R {
-					if c == d {
-						return true
-					}
-				}
-				return false
-			}(); b == false {
+				return slices.Contains(s.Delimiters.R, c)
+			}(); !b {
 				continue
 			}
 		}
 
-		if s.Escape == true {
+		if s.Escape {
 
 			// Check if found sequence is escaped (has a leading symbol from escape set)
 			// True when it has
@@ -98,7 +90,7 @@ func (s Switch) index(buf, prevSrc []byte, prevEscs int, isEOF bool) int {
 					return false
 				}
 				return true
-			}(); b == true {
+			}(); b {
 				continue
 			}
 		}

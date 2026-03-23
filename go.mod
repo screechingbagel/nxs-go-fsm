@@ -1,3 +1,3 @@
 module github.com/nixys/nxs-go-fsm
 
-go 1.19
+go 1.26.1
