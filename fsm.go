@@ -102,60 +102,75 @@ func (fsm *FSM) read(dst []byte) (int, error) {
 				prevSrc = fsm.src[:fsm.src0]
 			}
 
-			i, ns := state.index(fsm.src[fsm.src0:fsm.src1], prevSrc, fsm.prevEscs, fsm.isEOF)
-			if i >= 0 {
+			start := 0
+			buf := fsm.src[fsm.src0:fsm.src1]
+			for {
+				i, ns := state.indexFrom(buf, start, prevSrc, fsm.prevEscs, fsm.isEOF)
+				if i >= 0 {
 
-				// copy everything up to the match
-				n, err := fsm.writeOutBuf(fsm.src[fsm.src0 : fsm.src0+i])
-				fsm.src0 += n
-				if err != nil {
-					return 0, err
-				}
-
-				if ns.DataHandler == nil {
-
-					fsm.dst.Write(fsm.deferredBuf.Bytes())
-					fsm.deferredBuf.Reset()
-
-					n, _ := fsm.dst.Write(ns.Switch.Trigger)
-					fsm.src0 += n
-				} else {
-
-					d, err := ns.DataHandler(fsm.userCtx, fsm.deferredBuf.Bytes(), ns.Switch.Trigger)
-					if err != nil {
-						return 0, fmt.Errorf("fsm read data handler: %w", err)
-					}
-					fsm.deferredBuf.Reset()
-
-					fsm.src0 += len(ns.Switch.Trigger)
-
-					fsm.dst.Write(d)
-				}
-
-				fsm.stateSwitch(ns.Name)
-			} else {
-
-				// If specified src sequence has no more triggers.
-				//
-				// Do this becasue there could be a match straddling
-				// the boundary
-
-				// If trigger for current state not found and it is last
-				// source buffer (EOF), we not to get new data. So we may
-				// skip rest of data in source buffer
-				skip := len(fsm.src[fsm.src0:fsm.src1])
-				if ml := state.skipMaxLen(); !fsm.isEOF && ml > 0 {
-					skip = skip - ml + 1
-				}
-
-				if skip > 0 {
-
-					n, err := fsm.writeOutBuf(fsm.src[fsm.src0 : fsm.src0+skip])
-					if err != nil {
+					// copy everything up to the match
+					if _, err := fsm.writeOutBuf(buf[start:i]); err != nil {
 						return 0, err
 					}
 
-					fsm.src0 += n
+					if ns.DataHandler == nil {
+
+						fsm.dst.Write(fsm.deferredBuf.Bytes())
+						fsm.deferredBuf.Reset()
+
+						fsm.dst.Write(ns.Switch.Trigger)
+					} else {
+
+						d, err := ns.DataHandler(fsm.userCtx, fsm.deferredBuf.Bytes(), ns.Switch.Trigger)
+						if err != nil {
+							return 0, fmt.Errorf("fsm read data handler: %w", err)
+						}
+						fsm.deferredBuf.Reset()
+
+						fsm.dst.Write(d)
+					}
+
+					// Update fsm state and positions
+					fsm.src0 += i - start + len(ns.Switch.Trigger)
+					start = i + len(ns.Switch.Trigger)
+
+					oldState := fsm.curState
+					fsm.stateSwitch(ns.Name)
+
+					// If state changed, we must restart search from current src0
+					if fsm.curState != oldState {
+						break
+					}
+
+					// If we have something in dst, return it
+					if fsm.dst.Len() > 0 {
+						n, _ := fsm.dst.Read(dst)
+						return n, nil
+					}
+
+				} else {
+
+					// If specified src sequence has no more triggers.
+					//
+					// Do this becasue there could be a match straddling
+					// the boundary
+
+					// If trigger for current state not found and it is last
+					// source buffer (EOF), we not to get new data. So we may
+					// skip rest of data in source buffer
+					skip := len(buf) - start
+					if ml := state.skipMaxLen(); !fsm.isEOF && ml > 0 {
+						skip = skip - ml + 1
+					}
+
+					if skip > 0 {
+						n, err := fsm.writeOutBuf(buf[start : start+skip])
+						if err != nil {
+							return 0, err
+						}
+						fsm.src0 += n
+					}
+					break // exit inner loop to read more data
 				}
 			}
 		}
@@ -166,32 +181,29 @@ func (fsm *FSM) read(dst []byte) (int, error) {
 			// Get count of continuous escape bytes at the end of previous buffer
 			fsm.prevEscs = escapesCount(fsm.src[:fsm.src0])
 
-			func(src []byte) {
+			ls := fsm.src0
+			lm := len(fsm.prevSrc)
 
-				ls := len(src)
-				lm := len(fsm.prevSrc)
+			if ls > lm {
+				// If `src` buffer has more size than `fsm.prevSrc`,
+				// store in `fsm.prevSrc` last `lm` bytes from `src`
+				fsm.prevSrcL = copy(fsm.prevSrc, fsm.src[fsm.src0-lm:fsm.src0])
+			} else {
 
-				if ls > lm {
-					// If `src` buffer has more size than `fsm.prevSrc`,
-					// store in `fsm.prevSrc` last `lm` bytes from `src`
-					fsm.prevSrcL = copy(fsm.prevSrc, src[ls-lm:])
-				} else {
+				// Available space size in `fsm.prevSrc` to store old
+				// `fsm.prevSrc` data after `src`` will be saved in `fsm.prevSrc`
+				lr := lm - ls
 
-					// Available space size in `fsm.prevSrc` to store old
-					// `fsm.prevSrc` data after `src`` will be saved in `fsm.prevSrc`
-					lr := lm - ls
-
-					if fsm.prevSrcL > lr {
-						// Store in `fsm.prevSrc` only last `lr` of old data
-						// if current `fsm.prevSrcL` size more than available
-						// amount of bytes after the `src` is saved in `fsm.prevSrcL`
-						fsm.prevSrcL = copy(fsm.prevSrc, fsm.prevSrc[fsm.prevSrcL-lr:fsm.prevSrcL])
-					}
-
-					// Store in `fsm.prevSrc` new data from `src` buffer
-					fsm.prevSrcL += copy(fsm.prevSrc[fsm.prevSrcL:], src)
+				if fsm.prevSrcL > lr {
+					// Store in `fsm.prevSrc` only last `lr` of old data
+					// if current `fsm.prevSrcL` size more than available
+					// amount of bytes after the `src` is saved in `fsm.prevSrcL`
+					fsm.prevSrcL = copy(fsm.prevSrc, fsm.prevSrc[fsm.prevSrcL-lr:fsm.prevSrcL])
 				}
-			}(fsm.src[:fsm.src0])
+
+				// Store in `fsm.prevSrc` new data from `src` buffer
+				fsm.prevSrcL += copy(fsm.prevSrc[fsm.prevSrcL:], fsm.src[:fsm.src0])
+			}
 
 			fsm.src0, fsm.src1 = 0, copy(fsm.src, fsm.src[fsm.src0:fsm.src1])
 		}

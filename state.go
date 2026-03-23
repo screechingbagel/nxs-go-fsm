@@ -1,12 +1,18 @@
 package fsm
 
 import (
+	"bytes"
+
 	"github.com/coregx/ahocorasick"
 )
 
 type State struct {
 	NextStates []NextState
 	ac         *ahocorasick.Automaton
+	lMasks     [][256]bool
+	rMasks     [][256]bool
+	maxLen     int
+	single     bool
 }
 
 type StateName string
@@ -22,23 +28,58 @@ func (s *State) compile() {
 		return
 	}
 
+	s.lMasks = make([][256]bool, len(s.NextStates))
+	s.rMasks = make([][256]bool, len(s.NextStates))
+	s.maxLen = 0
+	s.single = len(s.NextStates) == 1
+
 	builder := ahocorasick.NewBuilder()
-	for _, ns := range s.NextStates {
+	for i, ns := range s.NextStates {
 		builder.AddPattern(ns.Switch.Trigger)
+
+		for _, b := range ns.Switch.Delimiters.L {
+			s.lMasks[i][b] = true
+		}
+		for _, b := range ns.Switch.Delimiters.R {
+			s.rMasks[i][b] = true
+		}
+
+		l := len(ns.Switch.Trigger)
+		if len(ns.Switch.Delimiters.L) > 0 {
+			l++
+		}
+		if len(ns.Switch.Delimiters.R) > 0 {
+			l++
+		}
+		if l > s.maxLen {
+			s.maxLen = l
+		}
 	}
 	s.ac, _ = builder.Build()
 }
 
-// index returns the minimal index within the available triggers for
-// current state or -1 if any triggers were found or delimiters/escapes
-// conditions was false
-func (s State) index(buf, prevSrc []byte, prevEscs int, isEOF bool) (int, NextState) {
+func (s State) indexFrom(buf []byte, start int, prevSrc []byte, prevEscs int, isEOF bool) (int, NextState) {
 
 	if s.ac == nil {
 		return -1, NextState{}
 	}
 
-	start := 0
+	if s.single {
+		ns := s.NextStates[0]
+		trigger := ns.Switch.Trigger
+		for {
+			offset := bytes.Index(buf[start:], trigger)
+			if offset < 0 {
+				return -1, NextState{}
+			}
+			pos := start + offset
+			if s.validate(0, buf, pos, prevSrc, prevEscs, isEOF) {
+				return pos, ns
+			}
+			start = pos + 1
+		}
+	}
+
 	for {
 		m := s.ac.Find(buf, start)
 		if m == nil {
@@ -48,7 +89,7 @@ func (s State) index(buf, prevSrc []byte, prevEscs int, isEOF bool) (int, NextSt
 		ns := s.NextStates[m.PatternID]
 
 		// Validate delimiters and escapes for this specific match
-		if ns.Switch.validate(buf, m.Start, prevSrc, prevEscs, isEOF) {
+		if s.validate(m.PatternID, buf, m.Start, prevSrc, prevEscs, isEOF) {
 			return m.Start, ns
 		}
 
@@ -59,25 +100,62 @@ func (s State) index(buf, prevSrc []byte, prevEscs int, isEOF bool) (int, NextSt
 	return -1, NextState{}
 }
 
-func (s State) skipMaxLen() int {
+func (s State) validate(patternID int, buf []byte, i int, prevSrc []byte, prevEscs int, isEOF bool) bool {
 
-	ll := 0
+	ns := s.NextStates[patternID]
 
-	for _, ns := range s.NextStates {
+	if len(ns.Switch.Delimiters.L) > 0 {
 
-		l := len(ns.Switch.Trigger)
-
-		if len(ns.Switch.Delimiters.L) > 0 {
-			l++
+		var c byte
+		if i == 0 {
+			if len(prevSrc) == 0 {
+				goto skipL
+			}
+			c = prevSrc[len(prevSrc)-1]
+		} else {
+			c = buf[i-1]
 		}
-		if len(ns.Switch.Delimiters.R) > 0 {
-			l++
-		}
 
-		if l > ll {
-			ll = l
+		if !s.lMasks[patternID][c] {
+			return false
 		}
 	}
 
-	return ll
+skipL:
+	if len(ns.Switch.Delimiters.R) > 0 {
+
+		if i+len(ns.Switch.Trigger) == len(buf) {
+			if !isEOF {
+				return false
+			}
+			goto skipR
+		}
+
+		c := buf[i+len(ns.Switch.Trigger)]
+		if !s.rMasks[patternID][c] {
+			return false
+		}
+	}
+
+skipR:
+	if ns.Switch.Escape {
+
+		// Check if found sequence is escaped (has a leading symbol from escape set)
+		// True when it has
+		ec := escapesCount(buf[:i])
+		if len(buf[:i])-ec == 0 {
+			// Escapes is from previous position till beginning of buffer
+			ec += prevEscs
+		}
+
+		if ec%2 != 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (s State) skipMaxLen() int {
+	return s.maxLen
 }
