@@ -1,4 +1,4 @@
-module github.com/nixys/nxs-go-fsm
+module github.com/screechingbagel/nxs-go-fsm
 
 go 1.26.1
 
