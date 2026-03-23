@@ -1,7 +1,12 @@
 package fsm
 
+import (
+	"github.com/coregx/ahocorasick"
+)
+
 type State struct {
 	NextStates []NextState
+	ac         *ahocorasick.Automaton
 }
 
 type StateName string
@@ -12,33 +17,46 @@ type NextState struct {
 	DataHandler func(any, []byte, []byte) ([]byte, error)
 }
 
+func (s *State) compile() {
+	if len(s.NextStates) == 0 {
+		return
+	}
+
+	builder := ahocorasick.NewBuilder()
+	for _, ns := range s.NextStates {
+		builder.AddPattern(ns.Switch.Trigger)
+	}
+	s.ac, _ = builder.Build()
+}
+
 // index returns the minimal index within the available triggers for
 // current state or -1 if any triggers were found or delimiters/escapes
 // conditions was false
 func (s State) index(buf, prevSrc []byte, prevEscs int, isEOF bool) (int, NextState) {
 
-	type NextStatesMin struct {
-		i  int
-		ns NextState
+	if s.ac == nil {
+		return -1, NextState{}
 	}
 
-	nsMin := NextStatesMin{
-		i:  -1,
-		ns: NextState{},
-	}
-
-	for _, ns := range s.NextStates {
-
-		i := ns.Switch.index(buf, prevSrc, prevEscs, isEOF)
-		if i >= 0 {
-			if nsMin.i == -1 || (nsMin.i > 0 && i < nsMin.i) {
-				nsMin.i = i
-				nsMin.ns = ns
-			}
+	start := 0
+	for {
+		m := s.ac.Find(buf, start)
+		if m == nil {
+			break
 		}
+
+		ns := s.NextStates[m.PatternID]
+
+		// Validate delimiters and escapes for this specific match
+		if ns.Switch.validate(buf, m.Start, prevSrc, prevEscs, isEOF) {
+			return m.Start, ns
+		}
+
+		// If not valid, move search forward
+		start = m.Start + 1
 	}
 
-	return nsMin.i, nsMin.ns
+	return -1, NextState{}
 }
 
 func (s State) skipMaxLen() int {

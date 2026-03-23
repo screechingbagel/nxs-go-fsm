@@ -43,6 +43,11 @@ type Description struct {
 
 func Init(r io.Reader, desc Description) io.Reader {
 
+	for k, v := range desc.States {
+		v.compile()
+		desc.States[k] = v
+	}
+
 	return &FSM{
 
 		ctx: desc.Ctx,
@@ -66,28 +71,14 @@ func Init(r io.Reader, desc Description) io.Reader {
 
 func (fsm *FSM) Read(dst []byte) (int, error) {
 
-	type ret struct {
-		n   int
-		err error
-	}
-
-	c := make(chan ret, 1)
-
-	go func() {
-		n, err := fsm.read(dst)
-		c <- ret{
-			n:   n,
-			err: err,
-		}
-		close(c)
-	}()
-
+	// Check context before reading
 	select {
-	case r := <-c:
-		return r.n, r.err
 	case <-fsm.ctx.Done():
 		return 0, fsm.ctx.Err()
+	default:
 	}
+
+	return fsm.read(dst)
 }
 
 func (fsm *FSM) read(dst []byte) (int, error) {
@@ -104,7 +95,12 @@ func (fsm *FSM) read(dst []byte) (int, error) {
 		if fsm.src1-fsm.src0 > 0 {
 
 			// Prepare the buffer contains previous source data
-			prevSrc := append(fsm.prevSrc[:fsm.prevSrcL], fsm.src[:fsm.src0]...)
+			var prevSrc []byte
+			if fsm.src0 == 0 {
+				prevSrc = fsm.prevSrc[:fsm.prevSrcL]
+			} else {
+				prevSrc = fsm.src[:fsm.src0]
+			}
 
 			i, ns := state.index(fsm.src[fsm.src0:fsm.src1], prevSrc, fsm.prevEscs, fsm.isEOF)
 			if i >= 0 {

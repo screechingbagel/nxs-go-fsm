@@ -1,7 +1,6 @@
 package fsm
 
 import (
-	"bytes"
 	"slices"
 )
 
@@ -16,87 +15,70 @@ type Delimiters struct {
 	R []byte
 }
 
-// index returns the index of the first instance
-// of state trigger considering specified delimiters and escapes.
-//
-// If trigger is not present in buf, or delimiters and escapes conditions are false -1 will be returned.
-//
-// `prevEscs` it is a count of continuous escape bytes at the end of previous buffer
-func (s Switch) index(buf, prevSrc []byte, prevEscs int, isEOF bool) int {
+func (s Switch) validate(buf []byte, i int, prevSrc []byte, prevEscs int, isEOF bool) bool {
 
-	for i := 0; i < len(buf); i++ {
+	if len(s.Delimiters.L) > 0 {
 
-		k := bytes.Index(buf[i:], s.Trigger)
-		if k < 0 {
-			return -1
-		}
-		i += k
+		if b := func() bool {
 
-		if len(s.Delimiters.L) > 0 {
+			var c byte
 
-			if b := func() bool {
+			if i == 0 {
 
-				var c byte
-
-				if i == 0 {
-
-					if len(prevSrc) == 0 {
-						return true
-					}
-
-					c = prevSrc[len(prevSrc)-1]
-				} else {
-					c = buf[i-1]
+				if len(prevSrc) == 0 {
+					return true
 				}
 
-				return slices.Contains(s.Delimiters.L, c)
-			}(); !b {
-				continue
+				c = prevSrc[len(prevSrc)-1]
+			} else {
+				c = buf[i-1]
 			}
+
+			return slices.Contains(s.Delimiters.L, c)
+		}(); !b {
+			return false
 		}
-
-		if len(s.Delimiters.R) > 0 {
-
-			if b := func() bool {
-
-				if i+len(s.Trigger) == len(buf) {
-					if isEOF {
-						return true
-					} else {
-						return false
-					}
-				}
-
-				c := buf[i+len(s.Trigger)]
-				return slices.Contains(s.Delimiters.R, c)
-			}(); !b {
-				continue
-			}
-		}
-
-		if s.Escape {
-
-			// Check if found sequence is escaped (has a leading symbol from escape set)
-			// True when it has
-			if b := func() bool {
-
-				ec := escapesCount(buf[:i])
-				if len(buf[:i])-ec == 0 {
-					// Escapes is from previous position till beginning of buffer
-					ec += prevEscs
-				}
-
-				if ec%2 == 0 {
-					return false
-				}
-				return true
-			}(); b {
-				continue
-			}
-		}
-
-		return i
 	}
 
-	return -1
+	if len(s.Delimiters.R) > 0 {
+
+		if b := func() bool {
+
+			if i+len(s.Trigger) == len(buf) {
+				if isEOF {
+					return true
+				} else {
+					return false
+				}
+			}
+
+			c := buf[i+len(s.Trigger)]
+			return slices.Contains(s.Delimiters.R, c)
+		}(); !b {
+			return false
+		}
+	}
+
+	if s.Escape {
+
+		// Check if found sequence is escaped (has a leading symbol from escape set)
+		// True when it has
+		if b := func() bool {
+
+			ec := escapesCount(buf[:i])
+			if len(buf[:i])-ec == 0 {
+				// Escapes is from previous position till beginning of buffer
+				ec += prevEscs
+			}
+
+			if ec%2 == 0 {
+				return false
+			}
+			return true
+		}(); b {
+			return false
+		}
+	}
+
+	return true
 }
